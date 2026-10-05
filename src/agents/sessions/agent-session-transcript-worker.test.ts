@@ -119,7 +119,6 @@ it("commits streamed and custom messages off the host thread and adopts the comm
     try {
       await assertWorkerCommit(
         createAssistant(
-          streamMocks,
           testModel,
           [{ type: "toolCall", id: "read-1", name: "read", arguments: { code: payload } }],
           "toolUse",
@@ -251,7 +250,6 @@ it("preserves a newer native view and tool-result state when a worker receipt ar
     const text = (value: string) => createAssistant(testModel, [{ type: "text", text: value }]);
     const call = (ids: string[], name = "read") =>
       createAssistant(
-        streamMocks,
         testModel,
         ids.map((id) => ({ type: "toolCall", id, name, arguments: {} })),
         "toolUse",
