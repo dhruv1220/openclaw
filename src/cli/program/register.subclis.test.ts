@@ -67,6 +67,7 @@ vi.mock("../exec-approvals-cli.js", () => ({
 }));
 vi.mock("../tui-cli.js", () => ({ registerTuiCli: mocks.registerTuiCli }));
 vi.mock("../cron-cli.js", () => ({ registerCronCli: mocks.registerCronCli }));
+// mock-isolation: registration-order checks must not initialize channel plugins or pairing stores.
 vi.mock("../pairing-cli.js", () => ({ registerPairingCli: mocks.registerPairingCli }));
 vi.mock("../plugins-cli.js", () => ({ registerPluginsCli: mocks.registerPluginsCli }));
 vi.mock("../channels-cli.js", () => ({ registerChannelsCli: mocks.registerChannelsCli }));

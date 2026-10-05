@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   resolveStatusJsonOutput: vi.fn(async (input) => ({ built: true, input })),
 }));
 
+// mock-isolation: exercise JSON policy without reading config, probing the Gateway, or loading plugins.
 vi.mock("./status.scan.fast-json.js", () => ({
   scanStatusJsonFast: mocks.scanStatusJsonFast,
 }));
