@@ -9,6 +9,6 @@ export function isConfigMachineOutput(argv: readonly string[]): boolean {
 /** Config set uses --json as a parser alias except when dry-run emits a JSON report. */
 export function isConfigSetJsonParseOnly(argv: readonly string[]): boolean {
   const terminator = argv.indexOf("--", 2);
-  const options = argv.slice(2, terminator < 0 ? undefined : terminator);
-  return options.includes("--json") && !options.includes("--dry-run");
+  const options = new Set(argv.slice(2, terminator < 0 ? undefined : terminator));
+  return options.has("--json") && !options.has("--dry-run");
 }
