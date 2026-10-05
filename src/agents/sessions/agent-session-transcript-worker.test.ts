@@ -6,6 +6,8 @@ import {
   loadTranscriptEventsSync,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
+import type { Model } from "../../llm/types.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { appendAttemptCacheTtlIfNeeded } from "../embedded-agent-runner/run/attempt-thread-helpers.js";
 import { createToolResultPromptProjectionState } from "../embedded-agent-runner/session-prompt-state.js";
@@ -13,14 +15,50 @@ import type { AgentEvent } from "../runtime/index.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
 import {
   createAssistant,
+  createAssistantResultStream,
   createTestSession,
   registerAgentSessionLoopTestLifecycle,
+  streamMocks,
   testModel,
 } from "./agent-session-loop-correctness.test-support.js";
+import type { AgentSessionEvent } from "./agent-session-types.js";
 import * as metadataRuntime from "./session-manager-metadata-runtime.js";
 import { SessionManager } from "./session-manager.js";
 
 registerAgentSessionLoopTestLifecycle();
+
+it("propagates transcript conflicts without synthesizing an assistant provider error", async () => {
+  const { session, sessionManager } = await createTestSession();
+  const conflict = new SqliteTranscriptMutationConflictError("conflicting-session");
+  const append = sessionManager.appendMessageAsync.bind(sessionManager);
+  let refused = false;
+  vi.spyOn(sessionManager, "appendMessageAsync").mockImplementation(async (message, options) => {
+    if (message.role === "assistant" && !refused) {
+      refused = true;
+      throw conflict;
+    }
+    return append(message, options);
+  });
+  streamMocks.streamSimple.mockImplementation((model: Model) =>
+    createAssistantResultStream(createAssistant(model, [{ type: "text", text: "Done." }])),
+  );
+  const events: AgentSessionEvent[] = [];
+  session.subscribe((event) => events.push(event));
+
+  await expect(session.prompt("Do the work")).rejects.toBe(conflict);
+
+  expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+  expect(session.agent.state.isStreaming).toBe(false);
+  expect(
+    events.some(
+      (event) =>
+        event.type === "message_end" &&
+        event.message.role === "assistant" &&
+        event.message.stopReason === "error",
+    ),
+  ).toBe(false);
+  expect(events.some((event) => event.type === "auto_retry_start")).toBe(false);
+});
 
 it("commits streamed and custom messages off the host thread and adopts the committed branch", async () => {
   await withOpenClawTestState({ label: "session-stream-worker" }, async (state) => {
@@ -81,6 +119,7 @@ it("commits streamed and custom messages off the host thread and adopts the comm
     try {
       await assertWorkerCommit(
         createAssistant(
+          streamMocks,
           testModel,
           [{ type: "toolCall", id: "read-1", name: "read", arguments: { code: payload } }],
           "toolUse",
@@ -212,6 +251,7 @@ it("preserves a newer native view and tool-result state when a worker receipt ar
     const text = (value: string) => createAssistant(testModel, [{ type: "text", text: value }]);
     const call = (ids: string[], name = "read") =>
       createAssistant(
+        streamMocks,
         testModel,
         ids.map((id) => ({ type: "toolCall", id, name, arguments: {} })),
         "toolUse",
