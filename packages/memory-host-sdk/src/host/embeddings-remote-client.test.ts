@@ -221,6 +221,64 @@ describe("resolveRemoteEmbeddingBearerClient", () => {
     expect(client.headers.originator).toBe("openclaw");
   });
 
+  it("does not redirect a custom provider URL for a chat-only subscription api mode", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const client = await resolveRemoteEmbeddingBearerClient({
+      provider: "openai",
+      defaultBaseUrl: "https://api.openai.com/v1",
+      options: {
+        config: {
+          models: {
+            providers: {
+              openai: {
+                ...configuredProvider,
+                api: "openai-chatgpt-responses",
+                baseUrl: "https://provider.example.test/v1",
+              },
+            },
+          },
+        } as never,
+        model: "text-embedding-3-small",
+      },
+    });
+
+    // The custom destination keeps ownership: no redirect to the adapter
+    // default, so the provider's credentials never leave its own destination.
+    expect(client.baseUrl).toBe("https://provider.example.test/v1");
+    expect(client.headers.Authorization).toBe("Bearer provider-key");
+    expect(client.headers["X-Provider-Tenant"]).toBe("provider-a");
+    expect(client.headers).not.toHaveProperty("originator");
+  });
+
+  it("keeps the destination-owned credential guard when a subscription-mode provider uses a custom URL", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    await expect(
+      resolveRemoteEmbeddingBearerClient({
+        provider: "openai",
+        defaultBaseUrl: "https://api.openai.com/v1",
+        options: {
+          config: {
+            models: {
+              providers: {
+                openai: {
+                  ...configuredProvider,
+                  api: "openai-chatgpt-responses",
+                  baseUrl: "https://provider.example.test/v1",
+                  headers: {
+                    Authorization: "Bearer custom-proxy-key",
+                    "X-Provider-Tenant": "provider-a",
+                  },
+                },
+              },
+            },
+          } as never,
+          model: "text-embedding-3-small",
+          remote: { baseUrl: "https://api.openai.com/v1" },
+        },
+      }),
+    ).rejects.toThrow(/memory\.search\.remote\.apiKey|Authorization header/);
+  });
+
   it("keeps the destination-owned credential guard on an explicit remote destination", async () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     await expect(
