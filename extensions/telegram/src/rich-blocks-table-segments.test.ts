@@ -1,48 +1,74 @@
-// Regression tests: a zero-width table placeholder can share its offset with a
-// blockquote/list wrapper that starts there. Source order (not wrapper kind)
-// decides ownership — see openclaw/openclaw#168366.
 import { describe, expect, it } from "vitest";
+import { inputRichBlocksToPlainText } from "./rich-block-model.js";
 import { markdownToTelegramRichBlocks } from "./rich-blocks.js";
 
-const TABLE = "| Brand | Status |\n|---|---|\n| Acme | waiting |";
+const table = "| Brand | Status |\n|---|---|\n| Acme | waiting |";
+const quotedTable = `> ${table.replaceAll("\n", "\n> ")}`;
+const tableBlock = { type: "table" };
+const quoteBlock = { type: "blockquote", blocks: [{ type: "paragraph" }] };
+const listBlock = { type: "list", items: [{ blocks: [{ type: "paragraph" }] }] };
 
-describe("table segments adjacent to wrappers", () => {
-  it("keeps a table before a blockquote as a sibling instead of nesting it", () => {
-    const { blocks, degradationReasons } = markdownToTelegramRichBlocks(
-      `${TABLE}\n\n> **3 more brands** need a decision.`,
-    );
-    expect(blocks.map((block) => block.type)).toEqual(["table", "blockquote"]);
-    const quote = blocks[1];
-    if (quote?.type !== "blockquote") {
-      expect(quote?.type).toBe("blockquote");
-      return;
+describe("native table block boundaries", () => {
+  it.each([
+    {
+      name: "table then blockquote",
+      markdown: `${table}\n\n> After`,
+      blocks: [tableBlock, quoteBlock],
+    },
+    {
+      name: "table then list",
+      markdown: `${table}\n\n- After`,
+      blocks: [tableBlock, listBlock],
+    },
+    {
+      name: "blockquote then table",
+      markdown: `> Before\n\n${table}`,
+      blocks: [quoteBlock, tableBlock],
+    },
+    {
+      name: "table then paragraph",
+      markdown: `${table}\n\nAfter`,
+      blocks: [tableBlock, { type: "paragraph" }],
+    },
+    {
+      name: "list then table",
+      markdown: `- Before\n\n${table}`,
+      blocks: [listBlock, tableBlock],
+    },
+    {
+      name: "table then heading",
+      markdown: `${table}\n\n# After`,
+      blocks: [tableBlock, { type: "heading" }],
+    },
+    {
+      name: "table then code",
+      markdown: `${table}\n\n\`\`\`\nAfter\n\`\`\``,
+      blocks: [tableBlock, { type: "pre" }],
+    },
+    {
+      name: "table-only quote then separate quote",
+      markdown: `${quotedTable}\n\n> After`,
+      blocks: [{ type: "blockquote", blocks: [tableBlock] }, quoteBlock],
+    },
+    {
+      name: "trailing table in quote",
+      markdown: `> Before\n>\n${quotedTable}`,
+      blocks: [{ type: "blockquote", blocks: [{ type: "paragraph" }, tableBlock] }],
+    },
+    {
+      name: "trailing table in list",
+      markdown: `- Before\n\n  ${table.replaceAll("\n", "\n  ")}`,
+      blocks: [{ type: "list", items: [{ blocks: [{ type: "paragraph" }, tableBlock] }] }],
+    },
+  ])("preserves $name without losing content", ({ markdown, blocks }) => {
+    const result = markdownToTelegramRichBlocks(markdown);
+    expect(result.blocks).toMatchObject(blocks);
+    expect(result.degradationReasons).toEqual([]);
+    const words = markdown.includes("Before")
+      ? ["Before", "Brand", "Status", "Acme", "waiting"]
+      : ["Brand", "Status", "Acme", "waiting", "After"];
+    for (const text of [inputRichBlocksToPlainText(result.blocks), result.plainText]) {
+      expect(text.match(/[A-Za-z]+/g)).toEqual(words);
     }
-    // The table must not leak into the quote's children.
-    expect(quote.blocks.map((block) => block.type)).toEqual(["paragraph"]);
-    expect(degradationReasons).toEqual([]);
-  });
-
-  it("keeps a table before a list as a sibling instead of dropping it", () => {
-    const { blocks, degradationReasons } = markdownToTelegramRichBlocks(
-      `${TABLE}\n\n- follow up Acme\n- send draft`,
-    );
-    expect(blocks.map((block) => block.type)).toEqual(["table", "list"]);
-    const list = blocks[1];
-    if (list?.type !== "list") {
-      expect(list?.type).toBe("list");
-      return;
-    }
-    expect(list.items).toHaveLength(2);
-    expect(degradationReasons).toEqual([]);
-  });
-
-  it("still renders a quote-wrapped table without duplicating it", () => {
-    // The source-order rule must not break tables authored inside a quote:
-    // a quote containing only a table collapses to the table itself.
-    const { blocks } = markdownToTelegramRichBlocks(
-      `> ${TABLE.replaceAll("\n", "\n> ")}`,
-    );
-    expect(blocks.map((block) => block.type)).toEqual(["table"]);
-    expect(JSON.stringify(blocks).split("Acme").length - 1).toBe(1);
   });
 });

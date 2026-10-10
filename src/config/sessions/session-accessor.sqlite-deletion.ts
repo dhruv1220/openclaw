@@ -41,6 +41,7 @@ import {
   pinSqliteSessionReceiptDeletionDatabase,
   prepareSqliteSessionReceiptDeletions,
   type IncognitoDeletionSource,
+  type SessionReceiptDeletionGeneration,
 } from "./session-accessor.sqlite-deletion-receipts.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import {
@@ -62,6 +63,7 @@ type SessionMutationRun<T> = (
   captureSettlement: (
     entries: readonly DeletionEntry[],
   ) => ReturnType<typeof captureSqliteSessionDeletionSettlement>,
+  settleReceipts: (assertCurrent?: () => void) => Promise<void>,
 ) => Promise<T>;
 type PreparedDeletion = {
   target: AgentHarnessSessionDeletionTarget;
@@ -97,16 +99,26 @@ export function hasPreparedNativeSessionDeletion(): boolean {
   );
 }
 
+/** Initialization and opaque SDK callbacks retain their synchronous agent-row authority. */
+export function preparedSessionDeletionRequiresNativeTransaction(): boolean {
+  return [...(deletions.getStore()?.values() ?? [])].some(
+    ({ target, mutations }) =>
+      target.initialization !== undefined ||
+      mutations.some((mutation) => !getNativeSessionDeletionParticipant(mutation)),
+  );
+}
+
 /** Opaque SDK mutations keep their native transaction; only owner-minted participants qualify. */
 export function captureNativeSessionWorkerDeletion(entries: readonly DeletionEntry[]) {
+  if (preparedSessionDeletionRequiresNativeTransaction()) {
+    return undefined;
+  }
   const captured = entries.map(({ sessionKey, entry }) => ({
     sessionKey,
     entry,
     prepared: deletions.getStore()?.get(sessionKey),
   }));
-  if (
-    !captured.some(({ prepared }) => prepared?.mutations.length || prepared?.target.initialization)
-  ) {
+  if (!captured.some(({ prepared }) => prepared?.mutations.length)) {
     return undefined;
   }
   const participants = [];
@@ -127,13 +139,6 @@ export function captureNativeSessionWorkerDeletion(entries: readonly DeletionEnt
     assertCurrent() {
       for (const { prepared } of captured) {
         prepared?.assertIdle();
-      }
-    },
-    committed(sessionKeys?: ReadonlySet<string>) {
-      for (const { sessionKey, prepared } of captured) {
-        if (prepared?.target.initialization && (!sessionKeys || sessionKeys.has(sessionKey))) {
-          commitSessionInitializationRollback(prepared.target.initialization);
-        }
       }
     },
   };
@@ -218,7 +223,7 @@ export async function withSqliteSessionDeletions<T>(
   run: SessionMutationRun<T>,
   options: {
     additionalIdentities?: readonly string[];
-    callerSettlesReceipts?: boolean;
+    receiptsOnCommit?: { generations: readonly SessionReceiptDeletionGeneration[] };
     incognito?: IncognitoDeletionSource;
   } = {},
 ): Promise<T> {
@@ -230,8 +235,14 @@ export async function withSqliteSessionContextReset<T>(
   scope: Parameters<typeof withSqliteSessionDeletions>[0],
   entry: DeletionEntry,
   run: SessionMutationRun<T>,
+  assertSourceCurrent?: () => void,
+  incognito?: IncognitoDeletionSource,
 ): Promise<T> {
-  return withSqliteSessionMutations(scope, [entry], run, { contextReset: true });
+  return withSqliteSessionMutations(scope, [entry], run, {
+    contextReset: true,
+    assertSourceCurrent,
+    incognito,
+  });
 }
 
 async function withSqliteSessionMutations<T>(
@@ -240,8 +251,9 @@ async function withSqliteSessionMutations<T>(
   run: SessionMutationRun<T>,
   options: {
     additionalIdentities?: readonly string[];
-    callerSettlesReceipts?: boolean;
+    receiptsOnCommit?: { generations: readonly SessionReceiptDeletionGeneration[] };
     contextReset?: boolean;
+    assertSourceCurrent?: () => void;
     incognito?: IncognitoDeletionSource;
   },
 ): Promise<T> {
@@ -306,7 +318,7 @@ async function withSqliteSessionMutations<T>(
     : undefined;
   const databaseOptions = toDatabaseOptions(scope);
   const receiptSource =
-    !options.contextReset && !options.callerSettlesReceipts && targets.length > 0
+    !options.contextReset && !options.receiptsOnCommit && targets.length > 0
       ? pinSqliteSessionReceiptDeletionDatabase(databaseOptions, actor)
       : undefined;
   const execution =
@@ -317,13 +329,6 @@ async function withSqliteSessionMutations<T>(
     const repositoryWorkspaces = repositories
       ? await findSessionRepositoryWorkspaces(targets, { path: repositories.path, env: scope.env })
       : [];
-    const receiptOnlyTargets =
-      !options.contextReset && !options.callerSettlesReceipts
-        ? targets.filter(
-            (target) =>
-              !repositoryWorkspaces.some((workspace) => workspace.sessionKey === target.sessionKey),
-          )
-        : [];
     const invoke = async (
       prepared: ReadonlyMap<string, readonly PreparedAgentHarnessSessionDeletion[]>,
     ) => {
@@ -442,14 +447,13 @@ async function withSqliteSessionMutations<T>(
           }),
         );
       }
-      const settleReceiptOnlyDeletions =
-        receiptSource && receiptOnlyTargets.length > 0
-          ? await prepareSqliteSessionReceiptDeletions(receiptSource, receiptOnlyTargets, {
-              env: scope.env,
-              assertCurrent,
-              assertRepositoryCurrent: () => repositorySource?.admission.assertCurrent(),
-            })
-          : undefined;
+      const receipts = await prepareSqliteSessionReceiptDeletions(receiptSource, targets, {
+        receiptsOnCommit: options.receiptsOnCommit,
+        repositorySessionKeys: repositoryWorkspaces.map((workspace) => workspace.sessionKey),
+        env: scope.env,
+        assertCurrent,
+        assertRepositoryCurrent: () => repositorySource?.admission.assertCurrent(),
+      });
       return await deletions.run(
         new Map(
           targets.map((target) => [
@@ -471,10 +475,14 @@ async function withSqliteSessionMutations<T>(
             assertCurrent();
           };
           try {
-            return await run(assertCurrent, (checkedEntries) => {
-              assertActive();
-              return captureSqliteSessionDeletionSettlement(checkedEntries, assertActive);
-            });
+            return await run(
+              assertCurrent,
+              (checkedEntries) => {
+                assertActive();
+                return captureSqliteSessionDeletionSettlement(checkedEntries, assertActive);
+              },
+              receipts.settleReceipts,
+            );
           } finally {
             active = false;
             // Conversation deletion owns repository cleanup, including retained publication
@@ -535,7 +543,7 @@ async function withSqliteSessionMutations<T>(
                 assertCurrent: assertSessionAbsent,
               });
             }
-            await settleReceiptOnlyDeletions?.();
+            await receipts.settlePresence();
           }
         },
       );
@@ -546,7 +554,10 @@ async function withSqliteSessionMutations<T>(
         ...targets.flatMap((target) => [target.sessionKey, target.sessionId]),
         ...(options.additionalIdentities ?? []),
       ],
-      run: async () => (prepare ? await prepare(targets, invoke) : await invoke(new Map())),
+      run: async () =>
+        prepare
+          ? await prepare(targets, invoke, options.assertSourceCurrent)
+          : await invoke(new Map()),
     });
   } finally {
     await execution?.release();
