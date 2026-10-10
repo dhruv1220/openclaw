@@ -171,9 +171,13 @@ vi.mock("../../agents/thinking-runtime.js", () => ({
     (provider === "openai" ? "codex" : "openclaw"),
 }));
 
-vi.mock("../../routing/session-key.js", () => ({
-  normalizeAgentId: vi.fn((value: string) => value),
-}));
+vi.mock("../../routing/session-key.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../routing/session-key.js")>();
+  return {
+    ...actual,
+    normalizeAgentId: vi.fn((value: string) => value),
+  };
+});
 
 vi.mock("../commands-text-routing.js", () => ({
   shouldHandleTextCommands: () => mocks.shouldHandleTextCommands(),

@@ -9,6 +9,7 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
+import { listModelAliasCandidates } from "../../agents/model-selection-shared.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -155,8 +156,8 @@ export async function resolveReplyDirectives(params: {
   const commandTextHasSlash = commandText.includes("/");
   const hasConfiguredModelAliases =
     commandTextHasSlash &&
-    Object.values(cfg.agents?.defaults?.models ?? {}).some((entry) =>
-      Boolean(normalizeOptionalString(entry.alias)),
+    listModelAliasCandidates(cfg, agentId).some((candidate) =>
+      Boolean(normalizeOptionalString(candidate.alias)),
     );
   const hasSkillReferences =
     canInterpretTextDirectives && hasSkillReferenceCandidate(command.commandBodyNormalized);
@@ -173,6 +174,7 @@ export async function resolveReplyDirectives(params: {
   const rawAliases = hasConfiguredModelAliases
     ? resolveConfiguredDirectiveAliases({
         cfg,
+        agentId,
         commandTextHasSlash,
         reservedCommands,
       })

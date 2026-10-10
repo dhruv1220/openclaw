@@ -379,6 +379,66 @@ describe("reply directive resolution", () => {
     expect(sessionEntry).toEqual(createSessionEntry());
   });
 
+  it("recognizes a slash shorthand for an agent-local model alias", async () => {
+    const cfg: OpenClawConfig = {
+      commands: { text: true },
+      agents: {
+        defaults: {},
+        entries: {
+          main: {
+            models: {
+              "stub/worker-model": { alias: "localfast" },
+            },
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    const { result, sessionCtx, sessionEntry } = await resolveModelDirective({
+      body: "/localfast",
+      cfg,
+    });
+
+    if (result.kind !== "continue") {
+      throw new Error(`expected continue result, got ${result.kind}`);
+    }
+    expect(result.result.directives).toMatchObject({
+      hasModelDirective: true,
+      rawModelDirective: "localfast",
+    });
+    expect(sessionCtx.Body).not.toBe("/localfast");
+    expect(sessionEntry).toEqual(createSessionEntry());
+  });
+
+  it("does not treat another agent's local alias as a directive", async () => {
+    const cfg: OpenClawConfig = {
+      commands: { text: true },
+      agents: {
+        defaults: {},
+        entries: {
+          other: {
+            models: {
+              "stub/worker-model": { alias: "localfast" },
+            },
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    const { result, sessionCtx, sessionEntry } = await resolveModelDirective({
+      body: "/localfast",
+      cfg,
+    });
+
+    if (result.kind !== "continue") {
+      throw new Error(`expected continue result, got ${result.kind}`);
+    }
+    expect(result.result.directives).toEqual(clearInlineDirectives("/localfast"));
+    expect(result.result.cleanedBody).toBe("/localfast");
+    expect(sessionCtx.Body).toBe("/localfast");
+    expect(sessionEntry).toEqual(createSessionEntry());
+  });
+
   it.each([
     { label: "default off", agentCfg: {}, caption: "Attachment caption" },
     {
