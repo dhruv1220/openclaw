@@ -12,6 +12,7 @@ import {
   type MarkdownTableCell,
   type MarkdownTableMeta,
 } from "openclaw/plugin-sdk/text-chunking";
+import { getMarkdownTableSource } from "openclaw/plugin-sdk/markdown-table-runtime";
 import {
   inputRichBlocksToPlainText,
   MAX_RICH_BLOCK_NESTING,
@@ -480,14 +481,28 @@ function emitSegments(
     if (left.start !== right.start) {
       return left.start - right.start;
     }
-    // Tables occupy no IR text. A table before an HTML opener shares its offset,
-    // but Markdown quotes/lists at that offset still own their table children.
-    const ownsTable = (segment: StructuralSegment) =>
-      segment.kind === "blockquote" || segment.kind === "list";
-    if (left.kind === "table" && right.kind !== "table" && !ownsTable(right)) {
+    // Tables occupy no IR text, so a table placeholder can share its offset
+    // with a wrapper that starts there. Source order decides ownership: a table
+    // authored inside a blockquote keeps its quote markers in the source
+    // prefix, while a table that merely precedes the wrapper has none. (A
+    // table nested in a list item always sits after the item marker text, so a
+    // list sharing the table's offset never contains it.)
+    const ownsTable = (segment: StructuralSegment, table: StructuralSegment) => {
+      if (table.kind !== "table") {
+        return false;
+      }
+      if (segment.kind === "list") {
+        return false;
+      }
+      if (segment.kind !== "blockquote") {
+        return false;
+      }
+      return getMarkdownTableSource(table.table)?.prefix?.includes(">") === true;
+    };
+    if (left.kind === "table" && right.kind !== "table" && !ownsTable(right, left)) {
       return -1;
     }
-    if (right.kind === "table" && left.kind !== "table" && !ownsTable(left)) {
+    if (right.kind === "table" && left.kind !== "table" && !ownsTable(left, right)) {
       return 1;
     }
     return right.end - left.end || containerRank(left) - containerRank(right);
